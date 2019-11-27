@@ -34,11 +34,7 @@
 (defclass node ()
   ((id :initarg :id :reader node-id)
    (type :initarg :type :reader node-type
-         :documentation "One of :sensor :output :bias or :hidden.")
-   (value :initform 0.0 :accessor node-value
-          :documentation "Current value of the node. For hidden nodes, this is the intermediate
-                          sum during evaluation. For all others, this is the constant value they
-                          will output.")))
+         :documentation "One of :sensor :output :bias or :hidden.")))
 
 (defvar *nodes* nil)
 (defun make-node (type &optional (node-id (next-node-id)))
@@ -96,7 +92,9 @@
   ((connections :accessor connections :initarg :connections :initform nil)
    (nodes :accessor nodes :initarg :nodes :initform nil)
    (generation :initarg :generation :reader generation :initform 0)
-   (fitness :initform 0.0 :initarg :fitness :accessor fitness)))
+   (fitness :initform 0.0 :initarg :fitness :accessor fitness)
+   (network :initform nil :accessor network)
+   (last-update :initform -1 :accessor last-update)))
 
 (defmethod copy-genome ((genome genome))
   "Copy a genome and set its generation number to current"
@@ -113,7 +111,7 @@
 
 (defmethod perturb ((genome genome))
   "Randomly adjust connection weights"
-  (dolist (connection (connections genome))
+  (dolist (connection (connections genome) genome)
     (let* ((new-weight (+ (weight connection)
                           (* +connection-perturb-scale+
                              (alexandria:gaussian-random))))
@@ -172,7 +170,8 @@
                                 out-node
                                 (or weight 
                                     (signed-random +new-connection-weight-magnitude+)))))
-        (extendf (connections genome) new-connection)))))
+        (extendf (connections genome) new-connection)))
+    genome))
 
 (defmethod add-node ((genome genome))
   "Add node mutation - existing connection is split and new node placed where old connection 
@@ -188,7 +187,8 @@
     (setf (enabled old-conn) nil)
     (extendf (nodes genome) new-node)
     (extendf (connections genome) in-conn)
-    (extendf (connections genome) out-conn)))
+    (extendf (connections genome) out-conn)
+    genome))
 
 (defmethod add-node-of-type ((genome genome) node-type &optional (node-id (next-node-id)))
   (let* ((new-node (make-node node-type node-id))
@@ -258,7 +258,7 @@
                  (or (and m1 m2 (abs (- (weight m1)
                                         (weight m2))))
                      0))))
-      (let* ((matched-weight-differences (reduce #'+ (map 'list #'weight-diff matches)))
+      (let* ((matched-weight-differences (sum (map 'list #'weight-diff matches)))
              (average-weight-differences (/ matched-weight-differences count-match))
              (num-genes (max (length (connections gen-a))
                              (length (connections gen-b))
@@ -267,8 +267,9 @@
            (/ (* count-disjoint +distance-disjoint-coefficient+) num-genes)
            (* average-weight-differences +distance-weights-coefficient+))))))
 
-(defparameter +compatibility-distance-threshold+ 1.0)
 
+(defun sum (list)
+  (reduce #'+ list :initial-value 0))
 
 
 (defparameter +equal-fitness-threshold+ 0.2)
@@ -310,15 +311,206 @@
                  :population (list genome)
                  :representative genome))
 
+(defparameter +compatibility-distance-threshold+ 1.0 
+  "Maximum distance for two genomes to be of the same species.")
+
 (defmethod speciesp ((species species) (genome genome))
   (< (distance genome
-               (representative species))))
+               (representative species))
+     +compatibility-distance-threshold+))
 
+
+(defmethod initialize ((species species))
+  "Return a species with a random representative"
+  (make-instance 'species 
+                 :population nil
+                 :representative (alexandria:random-elt (population species))))
+
+(defmethod copy-species ((species species))
+  (make-instance 'species
+                 :population (mapcar #'copy-genome (population species))
+                 ; Note - representative is read-only in all other cases
+                 ; so it's not being copied, it only matters for distance calculations.
+                 :representative (representative species)))
+
+(defun speciate (species-list population)
+  "Place each member of the population into their respective species, or a new species.
+   Return a list of (possibly modified) species."
+  (loop for genome in population do
+        (unless (loop for species in species-list
+                      when (speciesp species genome) 
+                        do (push genome (population species))
+                        and return t)
+          (setf species-list
+                (nconc species-list
+                       (list (make-instance 'species
+                                            :population (list genome)
+                                            :representative genome))))))
+  species-list)
 
 (defclass generation ()
   ((species :initform nil :initarg :species :accessor species
             :documentation "List of species present in this population.")
-   (generation-id :initform (next-generation) :accessor generation-id)))
+   (generation-id :initform (next-generation) :accessor generation-id)
+   (population-size :initform 150 :initarg :population-size :accessor population-size)))
 
 
+(defun make-generation (genome-list &optional (species-list nil) (population-size 150))
+  "Make a generation out of the explicit population genome-list.
+   When speciating, use representatives from species-list."
+  (let* ((population (mapcar #'copy-genome genome-list))
+         (species (mapcar #'initialize species-list)))
+    (setf species (speciate species population))
+    (make-instance 'generation 
+                   :species species
+                   :population-size population-size)))
 
+(defun weighted-random-elt (weighted-alist)
+  "Select a key value at random from weighted-alist.
+   Weights are relative - the sum of them is always 100%."
+  (let* ((total (sum (mapcar #'cdr weighted-alist)))
+         (selected (random total)))
+    (dolist (item weighted-alist nil)
+      (if (<= selected (cdr item))
+          (return-from weighted-random-elt (car item))
+          (setf selected (- selected (cdr item)))))))
+
+(defun do-until (predicate func &rest args)
+  "Continually apply args to func until the predicate is true against the result,
+   and return the result for which predicate was true."
+  (loop for r = (apply func args) then (apply func args)
+        when (funcall predicate r) return r))
+
+(defun select-random-n-elt (list n)
+  "Select n distinct elements from the given list."
+  (assert (>= (length list) n) (list n) "Too few elements in list")
+  (let ((result nil)
+        (remaining list))
+    (labels ((not-in-result-list (element)
+               (not (find element result))))
+      (dotimes (i n result)
+        (let ((next-choice (do-until #'not-in-result-list #'alexandria:random-elt remaining)))
+          (setf remaining (remove next-choice remaining))
+          (push next-choice result))))))
+
+(defparameter +species-mutation-rates+
+  '((breed          . 100)  ; (breed g1 g2)
+    (weight         . 100)  ; (perturb g1)
+    (new-node       . 100)  ; (add-node g1)
+    (new-connection . 100)  ; (add-connection g1)
+    (copy           . 100)) ; (copy-genome g1)
+  "Relative weight of various mutation types. 
+   Copy does not mutate. Breed is sexual reproduction.
+   All others are asexual reproduction.")
+
+(defmethod reproduce ((species species) &rest args)
+  "Return count new genomes from the given species"
+  (let* ((count (or (first args) 0)) ; Function parameter - number of new organisms to generate 
+         (new-population nil))
+    ; Create count new genomes
+    (dotimes (c count)
+      (let* ((action (if (<= 1 (length (population species)))
+                         ; When we only have one specimen, we can't breed, select one of the others.
+                         (do-until (lambda (a) (not (eq a 'breed))) 
+                                   #'weighted-random-elt 
+                                   +species-mutation-rates+)
+                         (weighted-random-elt +species-mutation-rates+)))
+             (genomes (select-random-n-elt (population species) 
+                                           (if (eq action 'breed) 2 1))))
+        (push (case action
+                (breed          (breed (first genomes) (second genomes)))
+                (weight         (perturb (copy-genome (first genomes))))
+                (new-node       (add-node (copy-genome (first genomes))))
+                (new-connection (add-connection (copy-genome (first genomes))))
+                (copy           (copy-genome (first genomes))))
+              new-population)))
+    ; select a representative (from previous generation) and create new species' generation
+    (make-instance 'species
+                   :population new-population
+                   :representative (alexandria:random-elt (population species)))))
+
+(defmethod fitness ((species species))
+  "Return a fitness value for the species as a whole"
+  (let ((len (length (population species)))
+        (fitness-list (mapcar #'fitness (population species))))
+    (labels ((adjusted-fitness (f) (/ f len)))
+      (if (= len 0)
+          0.0
+          (sum (mapcar #'adjusted-fitness fitness-list))))))
+
+(defmethod reproduce ((generation generation) &rest rest)
+  "Create a new generation from the previous generation."
+  (declare (ignore rest))
+  (let* ((species-list (mapcar #'initialize (species generation)))
+         (species-fitness-list (mapcar #'fitness (species generation)))
+         (total-fitness (sum species-fitness-list))
+         ; Species population size is fractional by species fitness
+         (species-population (mapcar (lambda (f) (floor ; species can go extinct if pop < 1
+                                                   (* (population-size generation)
+                                                      (/ f total-fitness))))
+                                     species-fitness-list))
+         ; Create a complete population of genomes based on species' fitness values
+         (population (loop for species in (species generation)
+                           for pop-size in species-population
+                           nconc (reproduce species pop-size))))
+    ; Speciate the population
+    (setf species-list (speciate species-list population))
+    ; Cull extinct species
+    (setf species-list (remove-if (lambda (s)
+                                    (= 0 (length (population s))))
+                                  species-list))
+    ; Return final genome
+    (make-instance 'genome
+                   :species species-list
+                   :population-size (sum species-population))))
+
+
+(defmethod update-network ((genome genome))
+  "If required (as tracked by innovation number), update the network structure of the given genome.
+   Returns a vector of nodes sorted by node id, containing (list id type value (list (next-node-pos weight) ...))"
+  (when (>= (last-update genome) *innovation*)
+    (return-from update-network (network genome)))
+  (let* ((nodes (sort (nodes genome) #'< :key #'node-id))
+         (node-count (length nodes))
+         (network (make-array (list node-count) :initial-element nil)))
+    ; Initialize network
+    (loop for i from 0
+          for node in nodes
+          do (setf (aref network i)
+                   (list (node-id node)
+                         (node-type node)
+                         0.0 ; value
+                         nil))) ; initial list of connections
+    ; Set connections for each node - enabled only.
+    (dolist (conn (connections genome))
+      (when (enabled conn)
+        (let ((in-node (position (node-id (in-node conn)) 
+                                 network
+                                 :key #'first))
+              (out-node (position (node-id (out-node conn))
+                                  network
+                                  :key #'first)))
+          (push (list out-node (weight conn))
+                (fourth (aref network in-node))))))
+    ; Update the genome with this information
+    (setf (last-update genome) *innovation*
+          (network genome) network)))
+
+
+(defmethod activate ((genome genome) inputs)
+  "Activate the given genome and return the outputs.
+   Activation continues for at most 100 cycles."
+  ; Assign all nodes their respective set of connections
+  ; Fire from input & bias nodes.
+  ; Fire all subsequent nodes, until one of the following:
+  ;     1. 100 such firings have occurred.
+  ;     2. All output nodes have been touched.
+  ; Return output nodes' current values.
+  (let* ((network (update-network genome)) ; Gater all nodes that might be involved
+         
+         )
+    
+    )
+  
+  
+  )
