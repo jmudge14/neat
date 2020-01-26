@@ -539,5 +539,28 @@
     (loop for i in out-nodes
           collect (third (aref network i)))))
 
+
+(defun make-genome (sensor-count output-count)
+  "Return a fully connected, randomized, initial genome with the given number of sensors and outputs."
+  (let ((genome (make-instance 'genome))
+        (in-nodes nil)
+        (out-nodes nil))
+    ; Create nodes
+    (add-node-of-type genome :bias)
+    (dotimes (n sensor-count)
+      (add-node-of-type genome :sensor))
+    (dotimes (n output-count)
+      (add-node-of-type genome :output))
+    ; Populate lists of nodes to be interconnected
+    (loop for node in (nodes genome) do
+          (if (eq (node-type node) :output)
+              (push node out-nodes)
+              (push node in-nodes)))
+    ; Connect every input node to every output node
+    (loop for in-node in in-nodes do
+          (loop for out-node in out-nodes do
+                (add-connection genome (list in-node out-node))))
+    ; Return genome for further consumption.
+    genome))
   
   )
