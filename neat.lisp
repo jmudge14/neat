@@ -41,7 +41,8 @@
   (let ((node (make-instance 'node
                              :id node-id
                              :type type)))
-    (push node *nodes*)))
+    (push node *nodes*)
+    node))
 
 
 (defmethod print-object ((node node) stream)
