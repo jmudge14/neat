@@ -468,7 +468,7 @@
 
 (defmethod update-network ((genome genome))
   "If required (as tracked by innovation number), update the network structure of the given genome.
-   Returns a vector of nodes sorted by node id, containing (list id type value (list (next-node-pos weight) ...))"
+   Returns a vector of nodes sorted by node id, containing (list id type value (list (next-node-pos weight) ...) touched)"
   (when (>= (last-update genome) *innovation*)
     (return-from update-network (network genome)))
   (let* ((nodes (sort (nodes genome) #'< :key #'node-id))
@@ -481,7 +481,9 @@
                    (list (node-id node)
                          (node-type node)
                          0.0 ; value
-                         nil))) ; initial list of connections
+                         nil ; initial list of connections 
+                         nil ; touched flag - only useful for output nodes.  
+                         ))) 
     ; Set connections for each node - enabled only.
     (dolist (conn (connections genome))
       (when (enabled conn)
@@ -497,6 +499,8 @@
     (setf (last-update genome) *innovation*
           (network genome) network)))
 
+(defparameter +max-activate-iterations+ 100
+  "Maximum number of firing rounds during activation if all output nodes are not yet reached.")
 
 (defmethod activate ((genome genome) inputs)
   "Activate the given genome and return the outputs.
@@ -504,14 +508,36 @@
   ; Assign all nodes their respective set of connections
   ; Fire from input & bias nodes.
   ; Fire all subsequent nodes, until one of the following:
-  ;     1. 100 such firings have occurred.
+  ;     1. +max-activate-iterations+ such firings have occurred.
   ;     2. All output nodes have been touched.
   ; Return output nodes' current values.
-  (let* ((network (update-network genome)) ; Gater all nodes that might be involved
-         
-         )
-    
-    )
-  
+  (let* ((network (update-network genome)) ; Gather all nodes that might be involved
+         (out-nodes (loop for i from 0 upto (1- (array-dimension network 0)) ; List of output node indices
+                          when (eq (second (aref network i) :output)) collect i)))
+    (block firing-loop 
+       (dotimes (iter +max-activate-iterations+)
+         ; Fire all nodes.
+         (loop for node in network do
+               (destructuring-bind (node-id node-type cur-value connections touched) node
+                 (loop for conn in connections do
+                       (destructuring-bind (out-node-id weight) conn 
+                         (let ((out-node (aref network out-node-id)))
+                           (incf (third out-node)
+                                 (* cur-value weight)) ; TODO use transfer function?
+                           ; Update touched if it is an output node
+                           (when (eq (second out-node) :output)
+                             (setf (fourth out-node) t)))))))
+         ; Check if we have completed firing before +max-activate-iterations+
+         ; That is, if all output nodes have been reached.
+         (loop for i in out-nodes
+               with all = t
+               unless (fouth (aref network i)) 
+               do (setf all nil) ; mark not all if anything not reached
+               end
+               finally (when all (return-from firing-loop)))))
+    ; Return the final output results
+    (loop for i in out-nodes
+          collect (third (aref network i)))))
+
   
   )
