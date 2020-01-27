@@ -5,6 +5,52 @@
 (import 'anaphora:aif)
 (import 'anaphora:it)
 
+;;;; Parameters
+(defparameter +connection-perturb-probability+ 0.90
+  "Chance of any particular connection being perturbed during perturbance mutation" 
+(defparameter +connection-perturb-scale+ 0.40
+  "Scale factor applied to a random number in (-1.0, 1.0) to perturb weights by")
+
+(defparameter +new-connection-weight-magnitude+ 1.0
+  "Largest absolute value of new connections' weights, selected randomly between (-mag,+mag)")
+
+; Coeifficients contributing to the distance calculation.
+(defparameter +distance-excess-coefficient+ 1.0
+  "Coefficient times number of excess genes")
+(defparameter +distance-disjoint-coefficient+ 1.0
+  "Coefficient times number of disjoint genes")
+(defparameter +distance-weights-coefficient+ 2.0
+  "Coefficient times average difference in weights")
+
+(defparameter +compatibility-distance-threshold+ 1.0 
+  "Maximum distance for two genomes to be of the same species.")
+
+
+(defparameter +equal-fitness-threshold+ 0.2
+  "Difference in fitness for parents to be considered equal during breeding")
+
+(defparameter +default-population-size+ 150
+  "The default population size of generations in a new experiment.")
+
+(defparameter +species-mutation-rates+
+  '((breed          . 2000)  ; (breed g1 g2)
+    (weight         . 1000)  ; (perturb g1)
+    (new-node       .   70)  ; (add-node g1)
+    (new-connection .  200)  ; (add-connection g1)
+    (copy           .    0)) ; (copy-genome g1) ; Set to 0 because carry-over percent supersedes it.
+  "Relative weight of various mutation types. 
+   Copy does not mutate. Breed is sexual reproduction.
+   All others are asexual reproduction.")
+
+(defparameter +generation-carryover-percent+ 0.10
+  "Percentile of best performers carried over from previous generation")
+
+(defparameter +max-activate-iterations+ 10
+  "Maximum number of firing rounds during activation if all output nodes are not yet reached.
+   If this value is larger, deeper networks will fully activate, but activation could take longer.")
+
+
+
 ;;;; Utilities
 
 (defmacro defincrementer (name)
@@ -108,17 +154,12 @@
                            :connections connections
                            :nodes nodes)))
 
-(defparameter +connection-perturb-probability+ 0.90
-  "Chance of any particular connection being perturbed")
-(defparameter +connection-perturb-scale+ 0.10
-  "Scale factor of weight against normal distribution")
-
 (defmethod perturb ((genome genome))
   "Randomly adjust connection weights"
   (dolist (connection (connections genome) genome)
     (let* ((new-weight (+ (weight connection)
-                          (* +connection-perturb-scale+
-                             (alexandria:gaussian-random))))
+                          (* (alexandria:gaussian-random -1.0 1.0)
+                             +connection-perturb-scale+)))
            (perturb? (> +connection-perturb-probability+ 
                         (random 1.0))))
       (when perturb?
@@ -149,9 +190,6 @@
         finally (if (<= i 99)
                     (return (list n1 n2))
                     (return nil))))
-
-(defparameter +new-connection-weight-magnitude+ 1.0
-  "Largest absolute value of new connections' random weights")
 
 (defun signed-random (magnitude)
   (let ((sign (> (random 1.0) 0.5)))
@@ -249,10 +287,6 @@
                      conn-b (pop conns-b)))))))
 
 
-(defparameter +distance-excess-coefficient+ 1.0)
-(defparameter +distance-disjoint-coefficient+ 1.0)
-(defparameter +distance-weights-coefficient+ 1.0)
-
 (defmethod distance ((gen-a genome) (gen-b genome))
   (multiple-value-bind (matches count-match count-disjoint count-excess)
                        (match-genes gen-a gen-b)
@@ -275,8 +309,6 @@
 (defun sum (list)
   (reduce #'+ list :initial-value 0))
 
-
-(defparameter +equal-fitness-threshold+ 0.2)
 
 (defmethod breed ((gen-a genome) (gen-b genome))
   "Return a new genome by breeding gen-a and gen-b."
@@ -315,9 +347,6 @@
                  :population (list genome)
                  :representative genome))
 
-(defparameter +compatibility-distance-threshold+ 1.0 
-  "Maximum distance for two genomes to be of the same species.")
-
 (defmethod speciesp ((species species) (genome genome))
   (< (distance genome
                (representative species))
@@ -351,9 +380,6 @@
                                             :population (list genome)
                                             :representative genome))))))
   species-list)
-
-(defparameter +default-population-size+ 150
-  "The default population size of generations in a new experiment.")
 
 (defclass generation ()
   ((species :initform nil :initarg :species :accessor species
@@ -400,15 +426,6 @@
           (setf remaining (remove next-choice remaining))
           (push next-choice result))))))
 
-(defparameter +species-mutation-rates+
-  '((breed          . 100)  ; (breed g1 g2)
-    (weight         . 100)  ; (perturb g1)
-    (new-node       . 100)  ; (add-node g1)
-    (new-connection . 100)  ; (add-connection g1)
-    (copy           . 100)) ; (copy-genome g1)
-  "Relative weight of various mutation types. 
-   Copy does not mutate. Breed is sexual reproduction.
-   All others are asexual reproduction.")
 
 (defmethod reproduce ((species species) &rest args)
   "Return count new genomes from the given species"
@@ -465,6 +482,16 @@
          (population (loop for species in (species generation)
                            for pop-size in species-population
                            nconc (reproduce species pop-size))))
+    ; Include the most fit 10% of individuals from the previous generation
+    ; This causes a slight over-size on each generation compared to target, but ensures good 
+    ; performers stay in the gene pool.
+    (let* ((num-to-keep (floor (* +generation-carryover-percent+ (population-size generation))))
+           (prev-pop (sort (population generation) #'> :key #'fitness)))
+      (setf population
+            (nconc population 
+                   (if (> num-to-keep (length prev-pop))
+                       prev-pop
+                       (subseq prev-pop 0 num-to-keep)))))
     ; Speciate the population
     (setf species-list (speciate species-list population))
     ; Cull extinct species
@@ -474,7 +501,9 @@
     ; Return final genome
     (make-instance 'generation
                    :species species-list
-                   :population-size (sum species-population))))
+                   ; :population-size (sum species-population)
+                   :population-size (population-size generation)
+                   )))
 
 
 (defmethod update-network ((genome genome))
@@ -510,9 +539,6 @@
     (setf (last-update genome) *innovation*
           (network genome) network)))
 
-(defparameter +max-activate-iterations+ 100
-  "Maximum number of firing rounds during activation if all output nodes are not yet reached.")
-
 (defun sigmoid (num)
   (/ 1 (+ 1 (exp (- num)))))
 
@@ -547,7 +573,6 @@
                          (let ((out-node (aref network out-node-id)))
                            (incf (third out-node)
                                  (* cur-value weight)) ; TODO use transfer function?
-                           (print (third out-node))
                            ; Update touched if it is an output node
                            (when (eq (second out-node) :output)
                              (setf (fifth out-node) t))))))
@@ -605,5 +630,53 @@
     (make-generation genome-list nil population-size)))
 
 
+(defmethod population ((generation generation))
+  "Return all genomes present in a generation."
+  (loop for species in (species generation)
+        appending (population species)))
+
+(defmethod max-fitness ((generation generation))
+  (loop for genome in (population generation)
+        maximizing (fitness genome)))
+
+;;;; XOR experiment
+
+(defparameter +expected-values-xor+ 
+  '(((0 0) 0.0)
+    ((0 1) 1.0)
+    ((1 0) 1.0)
+    ((1 1) 0.0)))
+
+(defmethod xor-trial-fitness ((genome genome))
+  "Tests a genome against a set of expected inputs and outputs.
+   Assumes a single output is required, for simplicity."
+  (loop for trial in +expected-values-xor+
+        for inputs = (first trial) then (first trial)
+        for target = (second trial) then (second trial)
+        for outval = (first (activate genome inputs))
+        with fitness = 0.0
+        do (incf fitness (abs (- outval target)))
+        finally (return (- 10.0 fitness))))
+
+(defmethod update-fitness-singles ((generation generation) fitness-func)
+  (loop for genome in (population generation)
+        do (setf (fitness genome) (funcall fitness-func genome))))
 
 
+(defmethod get-next-generation-single-fitness ((generation generation) fitness-func)
+  (update-fitness-singles generation fitness-func)
+  (let ((next-gen (reproduce generation)))
+    (update-fitness-singles next-gen fitness-func)
+    ; Return the previous generation if we didn't improve overall fitness.
+    (values next-gen (max-fitness next-gen))))
+
+
+(defun run-xor-experiment ()
+  (let ((gen (make-first-generation 2 1 1000)))
+    (dotimes (n 1000) 
+      (setf gen (get-next-generation-single-fitness gen #'xor-trial-fitness))
+      (format t "Trial ~A - Max ~A~%" n (max-fitness gen))
+      (when (> (max-fitness gen) 9.9)
+        (format t "Took ~A trials to reach fitness 9.9." n)
+        (return-from run-xor-experiment))))
+  (format t "Could not reach target within 1000 trials."))
