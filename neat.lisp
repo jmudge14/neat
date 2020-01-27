@@ -7,7 +7,7 @@
 
 ;;;; Parameters
 (defparameter +connection-perturb-probability+ 0.90
-  "Chance of any particular connection being perturbed during perturbance mutation" 
+  "Chance of any particular connection being perturbed during perturbance mutation" )
 (defparameter +connection-perturb-scale+ 0.40
   "Scale factor applied to a random number in (-1.0, 1.0) to perturb weights by")
 
@@ -672,7 +672,7 @@
 
 
 (defun run-xor-experiment ()
-  (let ((gen (make-first-generation 2 1 1000)))
+  (let ((gen (make-first-generation 2 1 100)))
     (dotimes (n 1000) 
       (setf gen (get-next-generation-single-fitness gen #'xor-trial-fitness))
       (format t "Trial ~A - Max ~A~%" n (max-fitness gen))
