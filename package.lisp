@@ -1,4 +1,4 @@
 ;;;; package.lisp
 
 (defpackage #:neat
-  (:use #:cl))
+  (:use #:cl #:alexandria #:anaphora))

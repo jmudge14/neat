@@ -6,6 +6,7 @@
   :license  "LGPL v3+"
   :version "0.0.1"
   :serial t
-  :depends-on (#:alexandria)
+  :depends-on (#:alexandria
+               #:anaphora)
   :components ((:file "package")
                (:file "neat")))
