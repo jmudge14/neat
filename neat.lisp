@@ -464,7 +464,7 @@
          ; Create a complete population of genomes based on species' fitness values
          (population (loop for species in (species generation)
                            for pop-size in species-population
-                           nconc (aif (reproduce species pop-size) (list it) nil))))
+                           nconc (reproduce species pop-size))))
     ; Speciate the population
     (setf species-list (speciate species-list population))
     ; Cull extinct species
