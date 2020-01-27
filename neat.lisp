@@ -6,10 +6,19 @@
 (import 'anaphora:it)
 
 ;;;; Parameters
+
+; Perturbations adjust weights by smallish random amounts.
 (defparameter +connection-perturb-probability+ 0.90
   "Chance of any particular connection being perturbed during perturbance mutation" )
 (defparameter +connection-perturb-scale+ 0.40
   "Scale factor applied to a random number in (-1.0, 1.0) to perturb weights by")
+
+; Harsh perturbation mutations "rock the boat" to prevent getting stuck in a local minima.
+(defparameter +connection-harsh-chance+ 0.10
+  "Chance that a genome will be perturbed harshly")
+(defparameter +connection-harsh-weight+ 0.80
+  "Harsh perturbations are in terms of a percent of the current value. Set this fairly high between 0 and 1.")
+(defparameter +connection-harsh-scale+ 0.90)
 
 (defparameter +new-connection-weight-magnitude+ 1.0
   "Largest absolute value of new connections' weights, selected randomly between (-mag,+mag)")
@@ -154,12 +163,19 @@
                            :connections connections
                            :nodes nodes)))
 
+(defun harshp ()
+  (< (random 1.0) +connection-harsh-chance+))
+
 (defmethod perturb ((genome genome))
   "Randomly adjust connection weights"
   (dolist (connection (connections genome) genome)
     (let* ((new-weight (+ (weight connection)
-                          (* (alexandria:gaussian-random -1.0 1.0)
-                             +connection-perturb-scale+)))
+                          (if (harshp)
+                              (* (weight connection)
+                                 (alexandria:gaussian-random (- +connection-harsh-scale+) +connection-harsh-scale+))
+                              (* (alexandria:gaussian-random -1.0 1.0)
+                                 +connection-perturb-scale+))))
+           
            (perturb? (> +connection-perturb-probability+ 
                         (random 1.0))))
       (when perturb?
@@ -672,7 +688,7 @@
 
 
 (defun run-xor-experiment ()
-  (let ((gen (make-first-generation 2 1 100)))
+  (let ((gen (make-first-generation 2 1 150)))
     (dotimes (n 1000) 
       (setf gen (get-next-generation-single-fitness gen #'xor-trial-fitness))
       (format t "Trial ~A - Max ~A~%" n (max-fitness gen))
