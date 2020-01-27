@@ -2,6 +2,9 @@
 
 (in-package #:neat)
 
+(import 'anaphora:aif)
+(import 'anaphora:it)
+
 ;;;; Utilities
 
 (defmacro defincrementer (name)
@@ -121,7 +124,7 @@
       (when perturb?
         (setf (weight connection) new-weight)))))
 
-(defmacro where (&rest l) `(lambda (it) (or ,@l)))
+#| (defmacro where (&rest l) `(lambda (it) (or ,@l))) |#
 
 (defmethod find-connection ((genome genome) (n1 node) (n2 node))
   (find (list n1 n2) 
@@ -349,14 +352,17 @@
                                             :representative genome))))))
   species-list)
 
+(defparameter +default-population-size+ 150
+  "The default population size of generations in a new experiment.")
+
 (defclass generation ()
   ((species :initform nil :initarg :species :accessor species
             :documentation "List of species present in this population.")
    (generation-id :initform (next-generation) :accessor generation-id)
-   (population-size :initform 150 :initarg :population-size :accessor population-size)))
+   (population-size :initform +default-population-size+ :initarg :population-size :accessor population-size)))
 
 
-(defun make-generation (genome-list &optional (species-list nil) (population-size 150))
+(defun make-generation (genome-list &optional (species-list nil) (population-size +default-population-size+))
   "Make a generation out of the explicit population genome-list.
    When speciating, use representatives from species-list."
   (let* ((population (mapcar #'copy-genome genome-list))
@@ -426,9 +432,12 @@
                 (copy           (copy-genome (first genomes))))
               new-population)))
     ; select a representative (from previous generation) and create new species' generation
+    #|
     (make-instance 'species
                    :population new-population
-                   :representative (alexandria:random-elt (population species)))))
+                   :representative (alexandria:random-elt (population species))) |#
+    new-population
+    ))
 
 (defmethod fitness ((species species))
   "Return a fitness value for the species as a whole"
@@ -448,12 +457,14 @@
          ; Species population size is fractional by species fitness
          (species-population (mapcar (lambda (f) (floor ; species can go extinct if pop < 1
                                                    (* (population-size generation)
-                                                      (/ f total-fitness))))
+                                                      (if (plusp total-fitness) 
+                                                          (/ f total-fitness)
+                                                          0.0))))
                                      species-fitness-list))
          ; Create a complete population of genomes based on species' fitness values
          (population (loop for species in (species generation)
                            for pop-size in species-population
-                           nconc (reproduce species pop-size))))
+                           nconc (aif (reproduce species pop-size) (list it) nil))))
     ; Speciate the population
     (setf species-list (speciate species-list population))
     ; Cull extinct species
@@ -461,7 +472,7 @@
                                     (= 0 (length (population s))))
                                   species-list))
     ; Return final genome
-    (make-instance 'genome
+    (make-instance 'generation
                    :species species-list
                    :population-size (sum species-population))))
 
@@ -502,6 +513,10 @@
 (defparameter +max-activate-iterations+ 100
   "Maximum number of firing rounds during activation if all output nodes are not yet reached.")
 
+(defun sigmoid (num)
+  (/ 1 (+ 1 (exp (- num)))))
+
+
 (defmethod activate ((genome genome) inputs)
   "Activate the given genome and return the outputs.
    Activation continues for at most 100 cycles."
@@ -513,25 +528,37 @@
   ; Return output nodes' current values.
   (let* ((network (update-network genome)) ; Gather all nodes that might be involved
          (out-nodes (loop for i from 0 upto (1- (array-dimension network 0)) ; List of output node indices
-                          when (eq (second (aref network i) :output)) collect i)))
+                          when (eq (second (aref network i)) :output) collect i)))
+    ; Reset initial values (note - assumes feed-forward expectation
+    (loop for i from 0 upto (1- (array-dimension network 0)) do
+          (setf (third (aref network i))
+                (case (second (aref network i))
+                  (:sensor (pop inputs))
+                  (:bias 1.0)
+                  (t 0.0))))
     (block firing-loop 
        (dotimes (iter +max-activate-iterations+)
          ; Fire all nodes.
-         (loop for node in network do
-               (destructuring-bind (node-id node-type cur-value connections touched) node
+         (loop for node being the elements of network do
+               (let ((cur-value (tanh (third node)))
+                     (connections (fourth node)))
                  (loop for conn in connections do
                        (destructuring-bind (out-node-id weight) conn 
                          (let ((out-node (aref network out-node-id)))
                            (incf (third out-node)
                                  (* cur-value weight)) ; TODO use transfer function?
+                           (print (third out-node))
                            ; Update touched if it is an output node
                            (when (eq (second out-node) :output)
-                             (setf (fourth out-node) t)))))))
+                             (setf (fifth out-node) t))))))
+               ; Reset current node value for sensor and hidden nodes, 
+               (unless (find (second node) '(:output)) 
+                 (setf (third node) 0.0)))
          ; Check if we have completed firing before +max-activate-iterations+
          ; That is, if all output nodes have been reached.
          (loop for i in out-nodes
                with all = t
-               unless (fouth (aref network i)) 
+               unless (fourth (aref network i)) 
                do (setf all nil) ; mark not all if anything not reached
                end
                finally (when all (return-from firing-loop)))))
@@ -539,9 +566,11 @@
     (loop for i in out-nodes
           collect (third (aref network i)))))
 
+;;; TODO
 
 (defun make-genome (sensor-count output-count)
-  "Return a fully connected, randomized, initial genome with the given number of sensors and outputs."
+  "Return a fully connected, randomized, initial genome with the given number of sensors and outputs.
+   This is primarily needed to create the first generation of an experiment."
   (let ((genome (make-instance 'genome))
         (in-nodes nil)
         (out-nodes nil))
@@ -556,11 +585,25 @@
           (if (eq (node-type node) :output)
               (push node out-nodes)
               (push node in-nodes)))
-    ; Connect every input node to every output node
+    ; Connect every sensor node to every output node
     (loop for in-node in in-nodes do
           (loop for out-node in out-nodes do
                 (add-connection genome (list in-node out-node))))
     ; Return genome for further consumption.
     genome))
-  
-  )
+
+(defun make-first-generation (sensor-count output-count &optional (population-size +default-population-size+))
+  "Return the first generation of a new experiment."
+  (let* ((starting-genome (make-genome sensor-count output-count))
+         (genome-list (list starting-genome)))
+    ; Create initial population of genomes with random mutations
+    (dotimes (n (1- population-size))
+      (let ((next-genome (copy-genome starting-genome)))
+        (perturb next-genome)
+        (push next-genome genome-list)))
+    ; Return a generation from the above initial population
+    (make-generation genome-list nil population-size)))
+
+
+
+
